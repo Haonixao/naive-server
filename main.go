@@ -58,7 +58,7 @@ func (s *server) serveDecoy(w http.ResponseWriter) {
 	w.Write([]byte(DecoyHTML))
 }
 
-var disableKnock = atomic.Bool
+var disableKnock = atomic.Bool{}
 
 func main() {
 	mode := flag.String("mode", "stealth", "Режим работы: stealth (самоподписанные) или official (Let's Encrypt)")

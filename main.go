@@ -18,12 +18,12 @@ import (
 
 // server struct для хранения http.Transport
 type server struct {
-	tr         *http.Transport
-	sni        string
-	filter     *allowedIPFilter
-	secretPath string
-	secretKey  string
-	mode       string
+	tr                         *http.Transport
+	sni                        string
+	filter                     *allowedIPFilter
+	secretPath                 string
+	secretPathWithKnockDisable string
+	mode                       string
 }
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -74,7 +74,7 @@ func main() {
 	mode := flag.String("mode", "stealth", "Режим работы: stealth (самоподписанные) или official (Let's Encrypt)")
 	sni := flag.String("sni", "go.dev", "SNI для маскировки")
 	secretPath := uuid.NewString()
-	secretKey := uuid.NewString()
+	secretPathWithKnockDisable := uuid.NewString()
 	flag.Parse()
 
 	filter := &allowedIPFilter{allowed: make(map[string]bool)}
@@ -121,12 +121,12 @@ func main() {
 	}
 
 	f := &ipFilterListener{
-		inner:      l,
-		filter:     filter,
-		sni:        *sni,
-		secretPath: secretPath,
-		secretKey:  secretKey,
-		mode:       *mode,
+		inner:                      l,
+		filter:                     filter,
+		sni:                        *sni,
+		secretPath:                 secretPath,
+		secretPathWithKnockDisable: secretPathWithKnockDisable,
+		mode:                       *mode,
 	}
 
 	// Инициализируем http.Transport
@@ -146,12 +146,12 @@ func main() {
 
 	// Создаем экземпляр нашей структуры server
 	s := &server{
-		tr:         tr,
-		sni:        *sni,
-		filter:     filter,
-		mode:       *mode,
-		secretPath: secretPath,
-		secretKey:  secretKey,
+		tr:                         tr,
+		sni:                        *sni,
+		filter:                     filter,
+		mode:                       *mode,
+		secretPath:                 secretPath,
+		secretPathWithKnockDisable: secretPathWithKnockDisable,
 	}
 
 	// Создаем http.Server с базовыми таймаутами
@@ -199,6 +199,7 @@ func main() {
 	}
 
 	log.Printf("naive_server (exit node) on :443 SNI=%s", *sni)
-	log.Printf("Activation (PLAIN HTTP): http://<ip>:443/%s?key=%s", secretPath, secretKey)
+	log.Printf("Activation (PLAIN HTTP): http://<ip>:443/%s", secretPath)
+	log.Printf("Activation with knock disable (PLAIN HTTP): http://<ip>:443/%s", secretPathWithKnockDisable)
 	log.Fatal(httpServer.Serve(tls.NewListener(f, h2TlsCfg)))
 }

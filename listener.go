@@ -64,12 +64,12 @@ func (f *allowedIPFilter) addAllowed(ip string) {
 }
 
 type ipFilterListener struct {
-	inner      net.Listener
-	filter     *allowedIPFilter
-	sni        string
-	mode       string
-	secretPath string
-	secretKey  string
+	inner                      net.Listener
+	filter                     *allowedIPFilter
+	sni                        string
+	mode                       string
+	secretPath                 string
+	secretPathWithKnockDisable string
 }
 
 func (l *ipFilterListener) Close() error {
@@ -111,13 +111,15 @@ func (l *ipFilterListener) Accept() (net.Conn, error) {
 		// Если это не TLS, возможно это наш "стук" (Knock)
 		if !disableKnock.Load() {
 			line, _ := br.ReadString('\n')
-			if strings.Contains(line, l.secretPath) && strings.Contains(line, "key="+l.secretKey) {
+			if strings.Contains(line, l.secretPath) {
 				l.filter.addAllowed(host)
 				response := "Activated"
-				if strings.Contains(line, "disable_knock=true") {
-					disableKnock.Store(true)
-					response = response + ". Knock disabled"
-				}
+				fmt.Fprintf(c, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n%s\n", response)
+			}
+			if strings.Contains(line, l.secretPathWithKnockDisable) {
+				l.filter.addAllowed(host)
+				disableKnock.Store(true)
+				response := "Activated. Knock disabled"
 				fmt.Fprintf(c, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n%s\n", response)
 			}
 

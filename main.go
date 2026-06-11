@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -54,13 +55,22 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *server) serveDecoy(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.WriteHeader(http.StatusServiceUnavailable)
+	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(DecoyHTML))
 }
 
 var disableKnock = atomic.Bool{}
 
 func main() {
+	// Загружаем decoy.html
+	content, err := os.ReadFile("decoy.html")
+	if err != nil {
+		log.Printf("ВНИМАНИЕ: Не удалось прочитать decoy.html, использую заглушку по умолчанию: %v", err)
+		DecoyHTML = "<h1>Technical Maintenance</h1>"
+	} else {
+		DecoyHTML = string(content)
+	}
+
 	mode := flag.String("mode", "stealth", "Режим работы: stealth (самоподписанные) или official (Let's Encrypt)")
 	sni := flag.String("sni", "go.dev", "SNI для маскировки")
 	secretPath := uuid.NewString()
@@ -70,7 +80,6 @@ func main() {
 	filter := &allowedIPFilter{allowed: make(map[string]bool)}
 
 	var cert tls.Certificate
-	var err error
 
 	if *mode == "official" {
 		log.Printf("Запуск в режиме OFFICIAL. Ожидаются сертификаты для: %s", *sni)

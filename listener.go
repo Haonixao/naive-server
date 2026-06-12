@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
-	"fmt"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/binary"
 	"io"
 	"log"
+	"math"
 	"net"
-	"strings"
 	"sync"
 	"time"
 )
@@ -64,12 +66,11 @@ func (f *allowedIPFilter) addAllowed(ip string) {
 }
 
 type ipFilterListener struct {
-	inner                      net.Listener
-	filter                     *allowedIPFilter
-	sni                        string
-	mode                       string
-	secretPath                 string
-	secretPathWithKnockDisable string
+	inner   net.Listener
+	filter  *allowedIPFilter
+	sni     string
+	mode    string
+	authKey []byte
 }
 
 func (l *ipFilterListener) Close() error {
@@ -78,6 +79,62 @@ func (l *ipFilterListener) Close() error {
 
 func (l *ipFilterListener) Addr() net.Addr {
 	return l.inner.Addr()
+}
+
+func (l *ipFilterListener) isValidClient(br *bufio.Reader, host string) bool {
+	// Пытаемся прочитать TLS Client Hello достаточно глубоко, чтобы найти SessionID
+	// Record Header (5) + Handshake Type(1) + Length(3) + Version(2) + Random(32) + SessionID Length(1)
+	// Итого минимум 44 байта до SessionID
+	const minHelloLen = 44 + 32
+	peekLen := 512 // Берем с запасом
+	data, err := br.Peek(peekLen)
+	if err != nil {
+		return false
+	}
+
+	// 1. Проверяем что это TLS Handshake (0x16)
+	if data[0] != 0x16 {
+		return false
+	}
+
+	// 2. Проверяем что это Client Hello (0x01)
+	if data[5] != 0x01 {
+		return false
+	}
+
+	// 3. Ищем SessionID
+	// Смещение SessionID Length: 5 (Record) + 1 (Type) + 3 (Len) + 2 (Ver) + 32 (Random) = 43
+	sessionIdLen := int(data[43])
+	if sessionIdLen != 32 {
+		return false
+	}
+
+	sessionId := data[44 : 44+32]
+
+	// 4. Извлекаем Timestamp (8 байт) и HMAC (24 байта)
+	tsBytes := sessionId[:8]
+	receivedMac := sessionId[8:]
+
+	timestamp := int64(binary.BigEndian.Uint64(tsBytes))
+	now := time.Now().Unix()
+
+	// 5. Проверяем отклонение по времени (не более 60 секунд)
+	if math.Abs(float64(now-timestamp)) > 60 {
+		return false
+	}
+
+	// 6. Вычисляем ожидаемый HMAC-SHA256(key, timestamp + SNI)
+	mac := hmac.New(sha256.New, l.authKey)
+	mac.Write(tsBytes)
+	mac.Write([]byte(l.sni))
+	expectedMac := mac.Sum(nil)[:24]
+
+	if hmac.Equal(receivedMac, expectedMac) {
+		l.filter.addAllowed(host)
+		return true
+	}
+
+	return false
 }
 
 func (l *ipFilterListener) Accept() (net.Conn, error) {
@@ -90,41 +147,15 @@ func (l *ipFilterListener) Accept() (net.Conn, error) {
 		host, _, _ := net.SplitHostPort(c.RemoteAddr().String())
 		br := bufio.NewReader(c)
 
-		// Подглядываем первый байт
-		firstByte, err := br.Peek(1)
-		if err != nil {
-			c.Close()
-			continue
+		// 1. Уже в белом списке
+		// 2. Успешный "стук" через SessionID
+		// 3. Официальный режим (пропускаем всех до ServeHTTP)
+		if l.filter.isAllowed(host) || l.isValidClient(br, host) || l.mode == "official" {
+			return &bufferedConn{Conn: c, r: br}, nil
 		}
 
-		// 0x16 - это начало TLS Handshake
-		if firstByte[0] == 0x16 {
-			// В официальном режиме пропускаем всех в TLS (чтобы показать заглушку в ServeHTTP)
-			// В stealth режиме - только авторизованных
-			if l.mode == "official" || l.filter.isAllowed(host) {
-				return &bufferedConn{Conn: c, r: br}, nil
-			}
-			// Чужой в stealth - прикидываемся голым TCP-туннелем к go.dev
-			go l.transparentToSni(c, br)
-			continue
-		}
-		// Если это не TLS, возможно это наш "стук" (Knock)
-		if !disableKnock.Load() {
-			line, _ := br.ReadString('\n')
-			if strings.Contains(line, l.secretPath) {
-				l.filter.addAllowed(host)
-				response := "Activated"
-				fmt.Fprintf(c, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n%s\n", response)
-			}
-			if strings.Contains(line, l.secretPathWithKnockDisable) {
-				l.filter.addAllowed(host)
-				disableKnock.Store(true)
-				response := "Activated. Knock disabled"
-				fmt.Fprintf(c, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n%s\n", response)
-			}
-
-		}
-		c.Close()
+		// Если никто не подошел - прикидываемся голым TCP-туннелем
+		go l.transparentToSni(c, br)
 	}
 }
 

@@ -1,16 +1,15 @@
 package main
 
 import (
+	"crypto/rand"
 	"crypto/tls"
 	"flag"
 	"log"
 	"net"
 	"net/http"
 	"os"
-	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"golang.org/x/net/http2"
@@ -18,12 +17,11 @@ import (
 
 // server struct для хранения http.Transport
 type server struct {
-	tr                         *http.Transport
-	sni                        string
-	filter                     *allowedIPFilter
-	secretPath                 string
-	secretPathWithKnockDisable string
-	mode                       string
+	tr      *http.Transport
+	sni     string
+	filter  *allowedIPFilter
+	authKey []byte
+	mode    string
 }
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -59,8 +57,6 @@ func (s *server) serveDecoy(w http.ResponseWriter) {
 	w.Write([]byte(DecoyHTML))
 }
 
-var disableKnock = atomic.Bool{}
-
 func main() {
 	// Загружаем decoy.html
 	content, err := os.ReadFile("decoy.html")
@@ -73,9 +69,13 @@ func main() {
 
 	mode := flag.String("mode", "stealth", "Режим работы: stealth (самоподписанные) или official (Let's Encrypt)")
 	sni := flag.String("sni", "go.dev", "SNI для маскировки")
-	secretPath := uuid.NewString()
-	secretPathWithKnockDisable := uuid.NewString()
 	flag.Parse()
+
+	// Генерируем секретный ключ для HMAC (32 байта)
+	authKey := make([]byte, 32)
+	if _, err := rand.Read(authKey); err != nil {
+		log.Fatalf("Ошибка генерации ключа: %v", err)
+	}
 
 	filter := &allowedIPFilter{allowed: make(map[string]bool)}
 
@@ -121,12 +121,11 @@ func main() {
 	}
 
 	f := &ipFilterListener{
-		inner:                      l,
-		filter:                     filter,
-		sni:                        *sni,
-		secretPath:                 secretPath,
-		secretPathWithKnockDisable: secretPathWithKnockDisable,
-		mode:                       *mode,
+		inner:   l,
+		filter:  filter,
+		sni:     *sni,
+		authKey: authKey,
+		mode:    *mode,
 	}
 
 	// Инициализируем http.Transport
@@ -146,12 +145,11 @@ func main() {
 
 	// Создаем экземпляр нашей структуры server
 	s := &server{
-		tr:                         tr,
-		sni:                        *sni,
-		filter:                     filter,
-		mode:                       *mode,
-		secretPath:                 secretPath,
-		secretPathWithKnockDisable: secretPathWithKnockDisable,
+		tr:      tr,
+		sni:     *sni,
+		filter:  filter,
+		mode:    *mode,
+		authKey: authKey,
 	}
 
 	// Создаем http.Server с базовыми таймаутами
@@ -199,7 +197,7 @@ func main() {
 	}
 
 	log.Printf("naive_server (exit node) on :443 SNI=%s", *sni)
-	log.Printf("Activation (PLAIN HTTP): http://<ip>:443/%s", secretPath)
-	log.Printf("Activation with knock disable (PLAIN HTTP): http://<ip>:443/%s", secretPathWithKnockDisable)
+	log.Printf("AUTH KEY (HEX): %x", authKey)
+	log.Printf("Client must use SessionID = [8 bytes timestamp] + [24 bytes HMAC-SHA256(key, timestamp+SNI)]")
 	log.Fatal(httpServer.Serve(tls.NewListener(f, h2TlsCfg)))
 }

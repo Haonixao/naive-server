@@ -198,6 +198,5 @@ func main() {
 
 	log.Printf("naive_server (exit node) on :443 SNI=%s", *sni)
 	log.Printf("AUTH KEY (HEX): %x", authKey)
-	log.Printf("Client must use SessionID = [8 bytes timestamp] + [24 bytes HMAC-SHA256(key, timestamp+SNI)]")
 	log.Fatal(httpServer.Serve(tls.NewListener(f, h2TlsCfg)))
 }

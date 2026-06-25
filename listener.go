@@ -4,10 +4,8 @@ import (
 	"bufio"
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/binary"
 	"io"
 	"log"
-	"math"
 	"net"
 	"sync"
 	"time"
@@ -49,7 +47,7 @@ type allowedIPFilter struct {
 func (f *allowedIPFilter) isAllowed(ip string) bool {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	if f.allowed == nil || len(f.allowed) == 0 {
+	if len(f.allowed) == 0 {
 		return false // По умолчанию запрещено
 	}
 	return f.allowed[ip]
@@ -92,17 +90,12 @@ func (l *ipFilterListener) isValidClient(br *bufio.Reader, host string) bool {
 		return false
 	}
 
-	// 1. Проверяем что это TLS Handshake (0x16)
-	if data[0] != 0x16 {
+	// Проверяем TLS Handshake + Client Hello
+	if data[0] != 0x16 || data[5] != 0x01 {
 		return false
 	}
 
-	// 2. Проверяем что это Client Hello (0x01)
-	if data[5] != 0x01 {
-		return false
-	}
-
-	// 3. Ищем SessionID
+	// Ищем SessionID
 	// Смещение SessionID Length: 5 (Record) + 1 (Type) + 3 (Len) + 2 (Ver) + 32 (Random) = 43
 	sessionIdLen := int(data[43])
 	if sessionIdLen != 32 {
@@ -111,30 +104,43 @@ func (l *ipFilterListener) isValidClient(br *bufio.Reader, host string) bool {
 
 	sessionId := data[44 : 44+32]
 
-	// 4. Извлекаем Timestamp (8 байт) и HMAC (24 байта)
-	tsBytes := sessionId[:8]
-	receivedMac := sessionId[8:]
+	// [0:5]  = random (5 байт)
+	// [5:8]  = минуты с начала года (3 байта, big-endian)
+	// [8:32] = HMAC (24 байта)
 
-	timestamp := int64(binary.BigEndian.Uint64(tsBytes))
-	now := time.Now().Unix()
+	randomBytes := sessionId[0:5]
+	minutesBytes := sessionId[5:8]
+	receivedMac := sessionId[8:32]
 
-	// 5. Проверяем отклонение по времени (не более 60 секунд)
-	if math.Abs(float64(now-timestamp)) > 60 {
+	// Преобразуем 3 байта минут в uint32
+	minutesSinceYearStart := uint32(minutesBytes[0])<<16 |
+		uint32(minutesBytes[1])<<8 |
+		uint32(minutesBytes[2])
+
+	// Восстанавливаем примерное время
+	yearStart := time.Date(time.Now().Year(), 1, 1, 0, 0, 0, 0, time.UTC)
+	clientTime := yearStart.Add(time.Duration(minutesSinceYearStart) * time.Minute)
+
+	// Проверяем временное окно (± 2.5 минуты, т.к. используем минуты)
+	now := time.Now().UTC()
+	if now.Sub(clientTime).Abs() > 2*time.Minute+30*time.Second {
 		return false
 	}
 
-	// 6. Вычисляем ожидаемый HMAC-SHA256(key, timestamp + SNI)
+	// Проверяем HMAC
 	mac := hmac.New(sha256.New, l.authKey)
-	mac.Write(tsBytes)
+	mac.Write(randomBytes)
+	mac.Write(minutesBytes)
 	mac.Write([]byte(l.sni))
 	expectedMac := mac.Sum(nil)[:24]
 
-	if hmac.Equal(receivedMac, expectedMac) {
-		l.filter.addAllowed(host)
-		return true
+	if !hmac.Equal(receivedMac, expectedMac) {
+		return false
 	}
 
-	return false
+	// Успешная проверка → добавляем IP в белый список
+	l.filter.addAllowed(host)
+	return true
 }
 
 func (l *ipFilterListener) Accept() (net.Conn, error) {

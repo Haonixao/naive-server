@@ -137,7 +137,7 @@ func main() {
 		}).DialContext,
 		MaxIdleConns:        100,
 		IdleConnTimeout:     90 * time.Second,
-		TLSHandshakeTimeout: 10 * time.Second,
+		TLSHandshakeTimeout: 30 * time.Second,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 		},
@@ -157,7 +157,7 @@ func main() {
 		Addr:              ":443",
 		Handler:           s,
 		TLSConfig:         h2TlsCfg,
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       1 * time.Minute,
 	}
 

@@ -45,7 +45,7 @@ func main() {
 	log.Printf("Activating %s (SNI: %s)...", *ip, *sni)
 
 	// 2. Connect via TCP
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(*ip, "443"), 10*time.Second)
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(*ip, "443"), 30*time.Second)
 	if err != nil {
 		log.Fatalf("Connection failed: %v", err)
 	}

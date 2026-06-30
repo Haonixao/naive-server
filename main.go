@@ -22,6 +22,7 @@ type server struct {
 	filter  *allowedIPFilter
 	authKey []byte
 	mode    string
+	padding string
 }
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -69,7 +70,12 @@ func main() {
 
 	mode := flag.String("mode", "stealth", "Режим работы: stealth (самоподписанные) или official (Let's Encrypt)")
 	sni := flag.String("sni", "go.dev", "SNI для маскировки")
+	padding := flag.String("padding", "1", "тип padding для данных")
 	flag.Parse()
+
+	if *padding == "2" {
+		NumFirstPaddings = -1
+	}
 
 	// Генерируем секретный ключ для HMAC (32 байта)
 	authKey := make([]byte, 32)
@@ -150,6 +156,7 @@ func main() {
 		filter:  filter,
 		mode:    *mode,
 		authKey: authKey,
+		padding: *padding,
 	}
 
 	// Создаем http.Server с базовыми таймаутами

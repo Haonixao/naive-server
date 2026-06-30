@@ -10,11 +10,12 @@ import (
 
 // Padding constants
 const (
-	NoPadding        = 0
-	AddPadding       = 1
-	RemovePadding    = 2
-	NumFirstPaddings = 8
+	NoPadding     = 0
+	AddPadding    = 1
+	RemovePadding = 2
 )
+
+var NumFirstPaddings = 8
 
 var bufferPool = sync.Pool{
 	New: func() any { b := make([]byte, 64*1024); return &b },
@@ -95,7 +96,7 @@ func flushingIoCopy(dst io.Writer, src io.Reader, buf []byte, paddingType int) (
 	for {
 		var nr int
 		var er error
-		if paddingType == AddPadding && numPadding < NumFirstPaddings {
+		if paddingType == AddPadding && ((NumFirstPaddings > 0 && numPadding < NumFirstPaddings) || NumFirstPaddings < 0) {
 			numPadding++
 			paddingSize := rand.Intn(256)
 			// Ограничиваем чтение, чтобы всё влезло в 64KB буфер вместе с заголовком и паддингом
@@ -111,7 +112,7 @@ func flushingIoCopy(dst io.Writer, src io.Reader, buf []byte, paddingType int) (
 				}
 				nr += 3 + paddingSize
 			}
-		} else if paddingType == RemovePadding && numPadding < NumFirstPaddings {
+		} else if paddingType == RemovePadding && ((NumFirstPaddings > 0 && numPadding < NumFirstPaddings) || NumFirstPaddings < 0) {
 			numPadding++
 			_, er = io.ReadFull(src, buf[0:3])
 			if er != nil {

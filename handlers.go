@@ -27,7 +27,7 @@ func (s *server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Передаем заголовок Padding-Type-Reply, если клиент запросил паддинг
 	if r.Header.Get("Padding") != "" {
-		w.Header().Set("Padding-Type-Reply", "1")
+		w.Header().Set("Padding-Type-Reply", s.padding)
 	}
 
 	dialer := net.Dialer{Timeout: 30 * time.Second}

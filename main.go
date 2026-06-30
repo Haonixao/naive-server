@@ -97,7 +97,6 @@ func main() {
 		}
 	} else {
 		cert, err = tls.LoadX509KeyPair(*sni+".crt", *sni+".key")
-		log.Printf("ВНИМАНИЕ: подход с самоподписанными сертификатами не работает когда naive использует для подключения quic. В этом случае нужен реальный сертификат вашего домена")
 		if err != nil {
 			log.Printf("Не удалось загрузить cert/key: %v", err)
 			GenCert(*sni)
@@ -106,7 +105,6 @@ func main() {
 				log.Fatalf("Критическая ошибка: даже после генерации сертификаты не загрузились: %v", err)
 			}
 			log.Printf("Сгенерированы новые %s + %s", *sni+".crt/"+*sni+".key", "rootCA.crt/rootCA.key")
-			log.Printf("rootCA.crt НЕОБХОДИМО добавить в хранилище сертификатов системы где запускается naive клиент")
 			log.Printf("%s ДОЛЖНЫ находится рядом с запускаемым сервером", *sni+".crt/"+*sni+".key")
 		}
 	}
@@ -201,9 +199,38 @@ func main() {
 				log.Printf("QUIC Backend error: %v", err)
 			}
 		}()
+	} else {
+		q := &quicFrontend{
+			filter:  filter,
+			sni:     *sni,
+			mode:    *mode,
+			backend: "127.0.0.1:8443",
+		}
+		go q.Start(":443")
+
+		h3TlsCfg := baseTlsCfg.Clone()
+		h3TlsCfg.NextProtos = []string{"h3"}
+		h3TlsCfg.MinVersion = tls.VersionTLS13
+
+		h3srv := &http3.Server{
+			Addr:      "127.0.0.1:8443",
+			Handler:   s,
+			TLSConfig: h3TlsCfg,
+			QUICConfig: &quic.Config{
+				MaxIdleTimeout:     10 * time.Minute,
+				MaxIncomingStreams: 1000,
+				EnableDatagrams:    true,
+			},
+		}
+		go func() {
+			log.Printf("QUIC Backend (HTTP/3) [stealth] запущен на %s", h3srv.Addr)
+			if err := h3srv.ListenAndServe(); err != nil {
+				log.Printf("QUIC Backend error: %v", err)
+			}
+		}()
 	}
 
-	log.Printf("naive_server (exit node) on :443 SNI=%s", *sni)
+	log.Printf("naive_server (exit node) запущен на :443 SNI=%s", *sni)
 	log.Printf("AUTH KEY (HEX): %x", authKey)
 	log.Fatal(httpServer.Serve(tls.NewListener(f, h2TlsCfg)))
 }

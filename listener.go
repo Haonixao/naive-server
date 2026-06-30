@@ -240,7 +240,6 @@ func (q *quicFrontend) handlePacket(packet []byte, clientAddr *net.UDPAddr) {
 
 	// В stealth режиме - проверяем авторизацию
 	if q.filter.isAllowed(clientAddr.IP.String()) {
-		log.Printf("QUIC: Авторизованный клиент %s -> Наш Backend", clientAddr.IP)
 		q.forward(packet, clientAddr, q.backend, "quic-backend")
 		return
 	}

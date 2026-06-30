@@ -50,11 +50,9 @@ func (s *server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	rc := http.NewResponseController(w)
 
-	// FullDuplex не работает с QUIC
-	if s.mode != "official" {
+	if r.ProtoMajor < 3 {
 		if err := rc.EnableFullDuplex(); err != nil {
-			log.Printf("handleConnect: EnableFullDuplex failed: %v", err)
-			return
+			log.Printf("handleConnect: EnableFullDuplex failed (continuing without it): %v", err)
 		}
 	}
 

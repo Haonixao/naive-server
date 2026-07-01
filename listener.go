@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// udpSession хранит состояние проксирования UDP-пакета
+// udpSession хранит состояние UDP-relay для одного клиента (IP:port).
 type udpSession struct {
 	clientAddr *net.UDPAddr
 	backend    *net.UDPConn
@@ -44,23 +44,36 @@ type allowedIPFilter struct {
 	allowed map[string]bool
 }
 
+func (f *allowedIPFilter) normalizeIP(ipStr string) string {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return ipStr
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		return ip4.String()
+	}
+	return ip.String()
+}
+
 func (f *allowedIPFilter) isAllowed(ip string) bool {
+	normalized := f.normalizeIP(ip)
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	if len(f.allowed) == 0 {
-		return false // По умолчанию запрещено
+		return false
 	}
-	return f.allowed[ip]
+	return f.allowed[normalized]
 }
 
 func (f *allowedIPFilter) addAllowed(ip string) {
+	normalized := f.normalizeIP(ip)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.allowed == nil {
 		f.allowed = make(map[string]bool)
 	}
-	f.allowed[ip] = true
-	log.Printf("IP %s активирован", ip)
+	f.allowed[normalized] = true
+	log.Printf("IP %s активирован", normalized)
 }
 
 type ipFilterListener struct {
@@ -185,6 +198,17 @@ func (l *ipFilterListener) transparentToSni(client net.Conn, br *bufio.Reader) {
 	<-done
 }
 
+func (q *quicFrontend) sessionKey(addr *net.UDPAddr) string {
+	return addr.String()
+}
+
+func isQuicInitial(packet []byte) bool {
+	if len(packet) < 6 {
+		return false
+	}
+	return (packet[0]&0xC0 == 0xC0) && ((packet[0]>>4)&0x03 == 0x00)
+}
+
 func (q *quicFrontend) Start(addr string) error {
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
@@ -214,6 +238,7 @@ func (q *quicFrontend) Start(addr string) error {
 			log.Printf("QUIC Frontend read error: %v", err)
 			continue
 		}
+
 		packet := make([]byte, n)
 		copy(packet, buf[:n])
 		go q.handlePacket(packet, clientAddr)
@@ -221,63 +246,69 @@ func (q *quicFrontend) Start(addr string) error {
 }
 
 func (q *quicFrontend) handlePacket(packet []byte, clientAddr *net.UDPAddr) {
-	key := clientAddr.String()
 	q.sessionsMu.RLock()
-	sess, ok := q.sessions[key]
+	sess := q.sessions[q.sessionKey(clientAddr)]
 	q.sessionsMu.RUnlock()
 
-	if ok {
-		sess.backend.Write(packet)
+	if sess != nil {
+		sess.backend.SetReadDeadline(time.Now().Add(120 * time.Second))
+		if _, err := sess.backend.Write(packet); err != nil {
+			log.Printf("[quicFrontend] write to backend: %v", err)
+		}
 		return
 	}
 
-	// В официальном режиме ВСЕГДА шлем на наш бэкенд, чтобы прошел TLS handshake
-	// и зонд увидел нашу заглушку в ServeHTTP.
-	if q.mode == "official" {
+	if !isQuicInitial(packet) {
+		return
+	}
+
+	clientIP := clientAddr.IP.String()
+	if q.filter.isAllowed(clientIP) {
 		q.forward(packet, clientAddr, q.backend, "quic-backend")
-		return
+	} else {
+		q.forward(packet, clientAddr, q.sni+":443", "fallback")
 	}
-
-	// В stealth режиме - проверяем авторизацию
-	if q.filter.isAllowed(clientAddr.IP.String()) {
-		q.forward(packet, clientAddr, q.backend, "quic-backend")
-		return
-	}
-
-	// В stealth режиме пересылаем на реальный SNI
-	q.forward(packet, clientAddr, q.sni+":443", "fallback")
 }
 
 func (q *quicFrontend) forward(packet []byte, clientAddr *net.UDPAddr, target string, label string) {
 	targetAddr, err := net.ResolveUDPAddr("udp", target)
 	if err != nil {
+		log.Printf("[quicFrontend] resolve %s: %v", target, err)
 		return
 	}
+
 	backend, err := net.DialUDP("udp", nil, targetAddr)
 	if err != nil {
+		log.Printf("[quicFrontend] dial %s: %v", target, err)
 		return
 	}
 
 	backend.SetReadBuffer(2 * 1024 * 1024)
 	backend.SetWriteBuffer(2 * 1024 * 1024)
 
+	if _, err := backend.Write(packet); err != nil {
+		log.Printf("[quicFrontend] write to %s: %v", label, err)
+		backend.Close()
+		return
+	}
+
 	sess := &udpSession{
 		clientAddr: clientAddr,
 		backend:    backend,
 	}
-
 	q.sessionsMu.Lock()
-	q.sessions[clientAddr.String()] = sess
+	q.sessions[q.sessionKey(clientAddr)] = sess
 	q.sessionsMu.Unlock()
 
-	backend.Write(packet)
-	go q.proxy(sess, label)
+	go q.proxyUDP(sess, label)
 }
 
-func (q *quicFrontend) proxy(sess *udpSession, label string) {
+func (q *quicFrontend) proxyUDP(sess *udpSession, label string) {
 	defer func() {
 		q.sessionsMu.Lock()
-		delete(q.sessions, sess.clientAddr.String())
+		if q.sessions[q.sessionKey(sess.clientAddr)] == sess {
+			delete(q.sessions, q.sessionKey(sess.clientAddr))
+		}
 		q.sessionsMu.Unlock()
 		sess.backend.Close()
 	}()
@@ -287,8 +318,17 @@ func (q *quicFrontend) proxy(sess *udpSession, label string) {
 		sess.backend.SetReadDeadline(time.Now().Add(120 * time.Second))
 		n, _, err := sess.backend.ReadFromUDP(buf)
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				log.Printf("[quicFrontend] %s proxy timeout", label)
+			} else {
+				log.Printf("[quicFrontend] %s proxy read: %v", label, err)
+			}
 			return
 		}
-		q.conn.WriteToUDP(buf[:n], sess.clientAddr)
+
+		if _, err := q.conn.WriteToUDP(buf[:n], sess.clientAddr); err != nil {
+			log.Printf("[quicFrontend] write to client %s: %v", sess.clientAddr, err)
+			return
+		}
 	}
 }

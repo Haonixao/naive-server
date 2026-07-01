@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  naive:
+    build: .
+    container_name: naive
+    ports:
+      - "1080:1080"
+    volumes:
+      - ./config.json:/naiveproxy/config.json
+    tty: true
+    stdin_open: true
+    working_dir: /naiveproxy

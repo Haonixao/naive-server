@@ -1,0 +1,19 @@
+# create container
+docker compose build --no-cache && docker compose up
+
+# in container
+
+# build naive
+cd /naiveproxy/src; ./get-clang.sh; ccache -z && ./build.sh && ccache -s
+
+# run naive with config.json
+cd /naiveproxy; nohup ./src/out/Release/naive > naive.log 2>&1 &
+
+# logs
+tail -20 naive.log
+
+# check is running
+pgrep -l naive
+
+# stop naive
+pkill naive

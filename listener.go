@@ -17,8 +17,6 @@ type udpSession struct {
 	backend    *net.UDPConn
 }
 
-// quicFrontend задумывался как фильтр для quic соединений с прозрачным проксированием на sni для чужих.
-// но naive quic полностью отказывается поддерживать самоподписанные сертификаты, поэтому фильтр пока не используется
 type quicFrontend struct {
 	conn       *net.UDPConn
 	filter     *allowedIPFilter

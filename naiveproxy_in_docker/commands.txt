@@ -17,3 +17,13 @@ pgrep -l naive
 
 # stop naive
 pkill naive
+
+# For android apk (needs ANDROID_HOME — already set in Dockerfile)
+cd /naiveproxy/src; export EXTRA_FLAGS='target_cpu="arm64" target_os="android"'; ./get-clang.sh && ./build.sh; mkdir -p /naiveproxy/apk/app/libs/arm64-v8a; cp out/Release/android/naive /naiveproxy/apk/app/libs/arm64-v8a/libnaive.so; cd /naiveproxy/apk; export APK_ABI=arm64-v8a; export APK_VERSION_NAME=v1.0.0-1; ./gradlew :app:assembleDebug
+
+# If SDK is missing in an old container, run once:
+# export ANDROID_HOME=/opt/android-sdk ANDROID_SDK_ROOT=/opt/android-sdk
+# mkdir -p $ANDROID_HOME/cmdline-tools && curl -o /tmp/sdk.zip https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip && unzip -q /tmp/sdk.zip -d /tmp && mv /tmp/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+# export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin
+# yes | sdkmanager --licenses && sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+# echo "sdk.dir=$ANDROID_HOME" > /naiveproxy/apk/local.properties
